@@ -8,38 +8,58 @@ LICENSE file in the root directory of this source tree.
 package hydra
 
 import (
+	"context"
+
+	hClient "github.com/ory/hydra-client-go/v2"
 	"github.com/pkg/errors"
 )
 
 // LoginReqDoer fetches information on the OAuth2 request and then accept or reject the requested authentication process.
 type LoginReqDoer struct {
 	hydraURL           string
+	hydra              Client
 	fakeTLSTermination bool
 	rememberFor        int
 }
 
 // NewLoginReqDoer creates a LoginRequest.
 func NewLoginReqDoer(hydraURL string, fakeTLSTermination bool, rememberFor int) *LoginReqDoer {
-	return &LoginReqDoer{hydraURL: hydraURL, fakeTLSTermination: fakeTLSTermination, rememberFor: rememberFor}
+	r := &LoginReqDoer{hydraURL: hydraURL, fakeTLSTermination: fakeTLSTermination, rememberFor: rememberFor}
+	r.hydra = *NewClient(hydraURL, true)
+	return r
 }
 
 // InitiateRequest fetches information on the OAuth2 request.
 func (lrd *LoginReqDoer) InitiateRequest(challenge string) (*ReqInfo, error) {
-	ri, err := initiateRequest(login, lrd.hydraURL, lrd.fakeTLSTermination, challenge)
+	ctx := context.Background()
+	lr, _, err := lrd.hydra.c.OAuth2API.
+		GetOAuth2LoginRequest(ctx).
+		LoginChallenge(challenge).
+		Execute()
+	ri := new(ReqInfo)
+	ri.Challenge = lr.Challenge
+	ri.RequestedAudience = lr.RequestedAccessTokenAudience
+	ri.RequestedScopes = lr.RequestedScope
+	ri.Skip = lr.Skip
+	ri.Subject = lr.Subject
 	return ri, errors.Wrap(err, "failed to initiate login request")
 }
 
 // AcceptLoginRequest accepts the requested authentication process, and returns redirect URI.
 func (lrd *LoginReqDoer) AcceptLoginRequest(challenge string, remember bool, subject string) (string, error) {
-	data := struct {
-		Remember    bool   `json:"remember"`
-		RememberFor int    `json:"remember_for"`
-		Subject     string `json:"subject"`
-	}{
-		Remember:    remember,
-		RememberFor: lrd.rememberFor,
-		Subject:     subject,
+	ctx := context.Background()
+	accept := hClient.NewAcceptOAuth2LoginRequest(subject)
+	accept.SetRemember(remember)
+	accept.SetRememberFor(int64(lrd.rememberFor))
+	redirectURI, _, err := lrd.hydra.OAuth2API().
+		AcceptOAuth2LoginRequest(ctx).
+		LoginChallenge(challenge).
+		AcceptOAuth2LoginRequest(*accept).
+		Execute()
+
+	if err != nil {
+		return "", err
 	}
-	redirectURI, err := acceptRequest(login, lrd.hydraURL, lrd.fakeTLSTermination, challenge, data)
-	return redirectURI, errors.Wrap(err, "failed to accept login request")
+
+	return redirectURI.RedirectTo, errors.Wrap(err, "failed to accept login request")
 }
